@@ -175,15 +175,23 @@ def analyze(files: list[pd.DataFrame], forbidden_terms: list[str]) -> pd.DataFra
 def to_excel(data: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     visible = data.drop(columns=[c for c in data.columns if c.startswith("__")], errors="ignore")
+    table_columns = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина"]
+    category_sheets = [
+        ("Повторный отзыв", "Повторный отзыв"),
+        ("Бессвязный текст", "Бессвязный текст"),
+        ("Негатив жалоба", "Негатив / жалоба"),
+    ]
     # Use a fresh XLSX writer for the report. This avoids inheriting workbook
     # visibility state from uploaded workbooks and keeps the export independent
     # from the engine used to read the source files.
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        visible.to_excel(writer, index=False, sheet_name="Результаты")
         blocked = visible[visible["Рекомендация"] == "Блокировать"]
-        blocked[["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина"]].to_excel(
-            writer, index=False, sheet_name="К блокировке"
-        )
+        category_values = visible["Категория"].fillna("").str.split("; ")
+        for sheet_name, category in category_sheets:
+            mask = category_values.apply(lambda values: category in values)
+            blocked.loc[mask[blocked.index], table_columns].to_excel(writer, index=False, sheet_name=sheet_name)
+        blocked[table_columns].to_excel(writer, index=False, sheet_name="Все блокировки")
+        visible.to_excel(writer, index=False, sheet_name="Полные данные")
     return output.getvalue()
 
 
@@ -226,6 +234,34 @@ if uploads:
         m2.metric("К блокировке", blocked_count)
         m3.metric("Нужна проверка данных", int((result["Категория"].str.contains("Нужна проверка данных", na=False)).sum()))
 
+        category_tables = [
+            ("Повторный отзыв", "Повторный отзыв"),
+            ("Бессвязный текст", "Бессвязный текст"),
+            ("Негатив / жалоба", "Негатив / жалоба"),
+        ]
+        table_columns = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "__source_file"]
+        category_values = result["Категория"].fillna("").str.split("; ")
+        for title, category in category_tables:
+            st.subheader(title)
+            category_mask = category_values.apply(lambda values: category in values)
+            category_rows = result.loc[(result["Рекомендация"] == "Блокировать") & category_mask, table_columns]
+            category_rows = category_rows.rename(columns={"__source_file": "Файл"})
+            if category_rows.empty:
+                st.info(f"В категории «{title}» блокировок нет.")
+            else:
+                st.dataframe(
+                    category_rows,
+                    width="stretch",
+                    hide_index=True,
+                    alt=f"Комментарии категории «{title}», рекомендованные к блокировке",
+                    column_config={
+                        "Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"),
+                        "Комментарий": st.column_config.TextColumn(width="large"),
+                        "Причина": st.column_config.TextColumn(width="large"),
+                    },
+                )
+
+        st.subheader("Полные данные по всем комментариям")
         show_cols = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "Рекомендация", "__source_file"]
         editable = result[show_cols].rename(columns={"__source_file": "Файл"})
         edited = st.data_editor(
@@ -245,23 +281,6 @@ if uploads:
 
         blocked_ids = result.loc[result["Рекомендация"] == "Блокировать", "ID"].astype(str).tolist()
         st.markdown("**Итоговый список ID к блокировке:** " + (", ".join(blocked_ids) if blocked_ids else "нет"))
-        st.subheader("Только комментарии к блокировке")
-        blocked_view = result.loc[result["Рекомендация"] == "Блокировать", ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "__source_file"]]
-        blocked_view = blocked_view.rename(columns={"__source_file": "Файл"})
-        if blocked_view.empty:
-            st.info("Нет комментариев, рекомендованных к блокировке.")
-        else:
-            st.dataframe(
-                blocked_view,
-                width="stretch",
-                hide_index=True,
-                alt="Комментарии, рекомендованные к блокировке, с оценкой и причиной",
-                column_config={
-                    "Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"),
-                    "Комментарий": st.column_config.TextColumn(width="large"),
-                    "Причина": st.column_config.TextColumn(width="large"),
-                },
-            )
         st.download_button(
             "Скачать Excel с результатами",
             data=to_excel(result),
