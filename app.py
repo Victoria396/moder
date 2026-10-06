@@ -12,7 +12,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Модератор комментариев", page_icon="📝", layout="wide")
 
-REQUIRED_COLUMNS = ["ID", "Комментарий", "Объект", "Кем создан", "Создан"]
+REQUIRED_COLUMNS = ["ID", "Оценка", "Комментарий", "Объект", "Кем создан", "Создан"]
 NEGATIVE_PHRASES = [
     "слишком сложно", "слишком сложный", "слишком трудный", "не смог ответить",
     "непросто", "тяжело", "трудный", "трудно", "мало вопросов", "маловато",
@@ -181,7 +181,7 @@ def to_excel(data: pd.DataFrame) -> bytes:
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         visible.to_excel(writer, index=False, sheet_name="Результаты")
         blocked = visible[visible["Рекомендация"] == "Блокировать"]
-        blocked[["ID", "ID пользователя", "ID объекта", "Категория", "Причина"]].to_excel(
+        blocked[["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина"]].to_excel(
             writer, index=False, sheet_name="К блокировке"
         )
     return output.getvalue()
@@ -226,14 +226,16 @@ if uploads:
         m2.metric("К блокировке", blocked_count)
         m3.metric("Нужна проверка данных", int((result["Категория"].str.contains("Нужна проверка данных", na=False)).sum()))
 
-        show_cols = ["ID", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "Рекомендация", "__source_file"]
+        show_cols = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "Рекомендация", "__source_file"]
         editable = result[show_cols].rename(columns={"__source_file": "Файл"})
         edited = st.data_editor(
             editable,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
+            alt="Все проверенные комментарии с оценкой, причиной и рекомендацией",
             disabled=[c for c in editable.columns if c != "Рекомендация"],
             column_config={
+                "Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"),
                 "Комментарий": st.column_config.TextColumn(width="large"),
                 "Причина": st.column_config.TextColumn(width="large"),
                 "Рекомендация": st.column_config.SelectboxColumn(options=["Блокировать", "Опубликовать", "Проверить вручную"], required=True),
@@ -243,6 +245,23 @@ if uploads:
 
         blocked_ids = result.loc[result["Рекомендация"] == "Блокировать", "ID"].astype(str).tolist()
         st.markdown("**Итоговый список ID к блокировке:** " + (", ".join(blocked_ids) if blocked_ids else "нет"))
+        st.subheader("Только комментарии к блокировке")
+        blocked_view = result.loc[result["Рекомендация"] == "Блокировать", ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "__source_file"]]
+        blocked_view = blocked_view.rename(columns={"__source_file": "Файл"})
+        if blocked_view.empty:
+            st.info("Нет комментариев, рекомендованных к блокировке.")
+        else:
+            st.dataframe(
+                blocked_view,
+                width="stretch",
+                hide_index=True,
+                alt="Комментарии, рекомендованные к блокировке, с оценкой и причиной",
+                column_config={
+                    "Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"),
+                    "Комментарий": st.column_config.TextColumn(width="large"),
+                    "Причина": st.column_config.TextColumn(width="large"),
+                },
+            )
         st.download_button(
             "Скачать Excel с результатами",
             data=to_excel(result),
