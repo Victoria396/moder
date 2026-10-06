@@ -32,6 +32,63 @@ NEGATIVE_PHRASES = [
 ]
 FILLERS = {"", "не указано", "не указано.", "—", "–", "-", "...", "…", "нет", "n/a", "- - -"}
 POSITIVE_MARKERS = ["интересно", "понравилось", "познавательно", "узнал", "узнала", "рекомендую", "советую", "увлекательно", "здорово", "отлично"]
+
+# Встроенный словарь модерации. Это не "официальный список запрещённых слов":
+# универсального словаря нет. Список собран по типовым категориям модерации:
+# оскорбления, ненормативная лексика, уничижительные обращения, явные
+# дискриминационные оскорбления и угрозы. Термины проверяются без учёта регистра
+# и знаков препинания между буквами.
+BUILTIN_MODERATION_TERMS = [
+    # Ненормативная лексика и производные.
+    "бля", "блядь", "блядский", "блядская", "блядское", "блядские",
+    "ебать", "ебан", "ебуч", "ебал", "ебала", "ебись", "заебал", "заебала",
+    "заебись", "уебок", "уебан", "уебищ", "долбоеб", "долбоёб",
+    "пизд", "пиздец", "пиздат", "пиздюк", "пиздюлина",
+    "хуй", "хуйн", "хуесос", "хуеплет", "хуета", "хуйня",
+    "манда", "мандовошк", "сучара", "сучка", "сука",
+    # Прямые оскорбления.
+    "мудак", "мудила", "мудозвон", "дебил", "дебилка", "дебильн",
+    "идиот", "идиотка", "идиотский", "кретин", "кретинка",
+    "долбоёб", "тупица", "тупой", "тупая", "тупоголов",
+    "кретин", "придурок", "придурочная", "даун", "даунизм",
+    "ублюдок", "ублюдочная", "урод", "уродина", "уродец",
+    "тварь", "скотина", "сволочь", "падла", "гнида", "мерзавец",
+    "мерзавка", "позорник", "позорница", "ничтожество",
+    "козёл", "козел", "коза", "хам", "хамло",
+    "шлюха", "шалава", "проститутка", "блядь",
+    # Явные дискриминационные/уничижительные обозначения групп.
+    "пидор", "пидорас", "пидорасина", "пидр",
+    "гомик", "гомосек", "лесбуха",
+    "чурка", "хач", "хачик", "черножоп", "узкоглаз",
+    "жид", "жидовк", "жидоед",
+    "ниггер", "нигер", "спик", "спикс",
+    # Прямые угрозы и пожелания вреда.
+    "сдохни", "сдохнете", "сдохнет", "сдохла", "сдох",
+    "убью", "убейся", "убиваться",
+    "чтоб ты сдох", "чтобы ты сдох",
+    "пошел нахуй", "пошла нахуй", "пошли нахуй",
+    "иди нахуй", "идите нахуй", "идти нахуй",
+    "иди в жопу", "пошел в жопу", "пошла в жопу",
+]
+
+def normalize_moderation_text(text: str) -> str:
+    """Normalize punctuation and ё/е so simple evasion like 'х-уй' is detected."""
+    normalized = text.casefold().replace("ё", "е")
+    normalized = re.sub(r"[^а-яa-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+def find_builtin_moderation_terms(text: str) -> list[str]:
+    normalized = normalize_moderation_text(text)
+    found: list[str] = []
+    for term in BUILTIN_MODERATION_TERMS:
+        normalized_term = normalize_moderation_text(term)
+        if not normalized_term:
+            continue
+        pattern = rf"(?<![а-яa-z0-9]){re.escape(normalized_term)}(?![а-яa-z0-9])"
+        if re.search(pattern, normalized):
+            found.append(term)
+    return found
+
 URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 WORD_RE = re.compile(r"[а-яёa-z]{2,}", re.IGNORECASE)
 
@@ -78,7 +135,7 @@ def positive_context(text: str, phrase: str) -> bool:
     return False
 
 
-def check_comment(comment: Any, forbidden_terms: list[str]) -> list[Finding]:
+def check_comment(comment: Any) -> list[Finding]:
     text = "" if comment is None or pd.isna(comment) else str(comment).strip()
     low = text.casefold()
     findings: list[Finding] = []
@@ -88,10 +145,17 @@ def check_comment(comment: Any, forbidden_terms: list[str]) -> list[Finding]:
     if URL_RE.search(text):
         findings.append(Finding("Ссылка / спам", "В тексте обнаружена ссылка"))
 
-    for term in forbidden_terms:
-        term = term.strip()
-        if term and re.search(rf"(?<!\w){re.escape(term)}(?!\w)", low, re.IGNORECASE):
-            findings.append(Finding("Запрещённые слова", f"Найдено слово/выражение: «{term}»"))
+    moderation_terms = find_builtin_moderation_terms(text)
+    if moderation_terms:
+        shown_terms = ", ".join(f"«{term}»" for term in moderation_terms[:5])
+        if len(moderation_terms) > 5:
+            shown_terms += f" и ещё {len(moderation_terms) - 5}"
+        findings.append(
+            Finding(
+                "Негатив / жалоба",
+                f"Оскорбление, ненормативная или уничижительная лексика: {shown_terms}",
+            )
+        )
 
     matched = next((phrase for phrase in NEGATIVE_PHRASES if phrase in low), None)
     if matched and not positive_context(text, matched):
@@ -115,7 +179,7 @@ def load_upload(uploaded_file) -> pd.DataFrame:
     return data
 
 
-def analyze(files: list[pd.DataFrame], forbidden_terms: list[str]) -> pd.DataFrame:
+def analyze(files: list[pd.DataFrame]) -> pd.DataFrame:
     data = pd.concat(files, ignore_index=True)
     missing = [column for column in REQUIRED_COLUMNS if column not in data.columns]
     if missing:
@@ -153,7 +217,7 @@ def analyze(files: list[pd.DataFrame], forbidden_terms: list[str]) -> pd.DataFra
             seen.add(pair)
 
     for idx, row in data.iterrows():
-        findings = check_comment(row["Комментарий"], forbidden_terms)
+        findings = check_comment(row["Комментарий"])
         if idx in duplicate_indices:
             findings.append(Finding("Повторный отзыв", "У пользователя уже есть отзыв к этому объекту; текст не имеет значения"))
         if not extract_id(row["ID пользователя"]):
@@ -208,12 +272,14 @@ with st.expander("Правила проверки", expanded=False):
 
 with st.sidebar:
     st.header("Настройки")
-    forbidden_raw = st.text_area(
-        "Запрещённые слова/выражения (по одному на строку)",
-        placeholder="Добавьте ваш утверждённый список. Сейчас список пуст.",
-        height=160,
+    st.info(
+        "Используется встроенный словарь модерации: ненормативная лексика, "
+        "оскорбления, уничижительные обозначения групп и явные угрозы."
     )
-    st.caption("Политически окрашенные высказывания автоматически не классифицируются: для этого нужны точные правила или словарь.")
+    st.caption(
+        "Срабатывания этого словаря попадают в категорию «Негатив / жалоба». "
+        "Список зашит в код и не редактируется пользователем."
+    )
 
 uploads = st.file_uploader("Excel-файлы с комментариями", type=["xlsx"], accept_multiple_files=True)
 if uploads:
@@ -225,7 +291,7 @@ if uploads:
             frame = load_upload(file)
             frames.append(frame)
             file_rows.append({"Файл": file.name, "Строк": len(frame)})
-        result = analyze(frames, [term for term in forbidden_raw.splitlines() if term.strip()])
+        result = analyze(frames)
         st.caption("Загружено в проверку: " + "; ".join(f"{item['Файл']} — {item['Строк']} строк" for item in file_rows))
         blocked_count = int((result["Рекомендация"] == "Блокировать").sum())
         st.subheader("Результаты")
