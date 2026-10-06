@@ -33,61 +33,46 @@ NEGATIVE_PHRASES = [
 FILLERS = {"", "не указано", "не указано.", "—", "–", "-", "...", "…", "нет", "n/a", "- - -"}
 POSITIVE_MARKERS = ["интересно", "понравилось", "познавательно", "узнал", "узнала", "рекомендую", "советую", "увлекательно", "здорово", "отлично"]
 
-# Встроенный словарь модерации. Это не "официальный список запрещённых слов":
-# универсального словаря нет. Список собран по типовым категориям модерации:
-# оскорбления, ненормативная лексика, уничижительные обращения, явные
-# дискриминационные оскорбления и угрозы. Термины проверяются без учёта регистра
-# и знаков препинания между буквами.
 BUILTIN_MODERATION_TERMS = [
-    # Ненормативная лексика и производные.
     "бля", "блядь", "блядский", "блядская", "блядское", "блядские",
     "ебать", "ебан", "ебуч", "ебал", "ебала", "ебись", "заебал", "заебала",
     "заебись", "уебок", "уебан", "уебищ", "долбоеб", "долбоёб",
     "пизд", "пиздец", "пиздат", "пиздюк", "пиздюлина",
     "хуй", "хуйн", "хуесос", "хуеплет", "хуета", "хуйня",
     "манда", "мандовошк", "сучара", "сучка", "сука",
-    # Прямые оскорбления.
     "мудак", "мудила", "мудозвон", "дебил", "дебилка", "дебильн",
     "идиот", "идиотка", "идиотский", "кретин", "кретинка",
     "долбоёб", "тупица", "тупой", "тупая", "тупоголов",
-    "кретин", "придурок", "придурочная", "даун", "даунизм",
+    "придурок", "придурочная", "даун", "даунизм",
     "ублюдок", "ублюдочная", "урод", "уродина", "уродец",
     "тварь", "скотина", "сволочь", "падла", "гнида", "мерзавец",
     "мерзавка", "позорник", "позорница", "ничтожество",
     "козёл", "козел", "коза", "хам", "хамло",
-    "шлюха", "шалава", "проститутка", "блядь",
-    # Явные дискриминационные/уничижительные обозначения групп.
-    "пидор", "пидорас", "пидорасина", "пидр",
-    "гомик", "гомосек", "лесбуха",
-    "чурка", "хач", "хачик", "черножоп", "узкоглаз",
-    "жид", "жидовк", "жидоед",
+    "шлюха", "шалава", "проститутка",
+    "пидор", "пидорас", "пидорасина", "пидр", "гомик", "гомосек", "лесбуха",
+    "чурка", "хач", "хачик", "черножоп", "узкоглаз", "жид", "жидовк", "жидоед",
     "ниггер", "нигер", "спик", "спикс",
-    # Прямые угрозы и пожелания вреда.
-    "сдохни", "сдохнете", "сдохнет", "сдохла", "сдох",
-    "убью", "убейся", "убиваться",
-    "чтоб ты сдох", "чтобы ты сдох",
-    "пошел нахуй", "пошла нахуй", "пошли нахуй",
-    "иди нахуй", "идите нахуй", "идти нахуй",
-    "иди в жопу", "пошел в жопу", "пошла в жопу",
+    "сдохни", "сдохнете", "сдохнет", "сдохла", "сдох", "убью", "убейся", "убиваться",
+    "чтоб ты сдох", "чтобы ты сдох", "пошел нахуй", "пошла нахуй", "пошли нахуй",
+    "иди нахуй", "идите нахуй", "идти нахуй", "иди в жопу", "пошел в жопу", "пошла в жопу",
 ]
 
+
 def normalize_moderation_text(text: str) -> str:
-    """Normalize punctuation and ё/е so simple evasion like 'х-уй' is detected."""
     normalized = text.casefold().replace("ё", "е")
     normalized = re.sub(r"[^а-яa-z0-9]+", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
+
 
 def find_builtin_moderation_terms(text: str) -> list[str]:
     normalized = normalize_moderation_text(text)
     found: list[str] = []
     for term in BUILTIN_MODERATION_TERMS:
         normalized_term = normalize_moderation_text(term)
-        if not normalized_term:
-            continue
-        pattern = rf"(?<![а-яa-z0-9]){re.escape(normalized_term)}(?![а-яa-z0-9])"
-        if re.search(pattern, normalized):
+        if normalized_term and re.search(rf"(?<![а-яa-z0-9]){re.escape(normalized_term)}(?![а-яa-z0-9])", normalized):
             found.append(term)
     return found
+
 
 URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 WORD_RE = re.compile(r"[а-яёa-z]{2,}", re.IGNORECASE)
@@ -119,13 +104,11 @@ def extract_id(value: Any) -> str:
 
 
 def positive_context(text: str, phrase: str) -> bool:
-    """Avoid false positives for the prompt's explicit 'difficult but enjoyable' cases."""
     low = text.casefold()
     match_at = low.find(phrase.casefold())
     if match_at < 0:
         return False
     tail = low[match_at:]
-    # A positive clause after a concession usually changes the meaning of a difficulty complaint.
     for joiner in ("но", "зато", "однако"):
         pos = tail.find(joiner)
         if pos >= 0 and any(marker in tail[pos:] for marker in POSITIVE_MARKERS):
@@ -141,33 +124,23 @@ def check_comment(comment: Any) -> list[Finding]:
     findings: list[Finding] = []
     if low in FILLERS:
         return [Finding("Пустой комментарий", "Пустой текст или бессодержательный заполнитель")]
-
     if URL_RE.search(text):
         findings.append(Finding("Ссылка / спам", "В тексте обнаружена ссылка"))
-
     moderation_terms = find_builtin_moderation_terms(text)
     if moderation_terms:
         shown_terms = ", ".join(f"«{term}»" for term in moderation_terms[:5])
         if len(moderation_terms) > 5:
             shown_terms += f" и ещё {len(moderation_terms) - 5}"
-        findings.append(
-            Finding(
-                "Негатив / жалоба",
-                f"Оскорбление, ненормативная или уничижительная лексика: {shown_terms}",
-            )
-        )
-
+        findings.append(Finding("Негатив / жалоба", f"Оскорбление, ненормативная или уничижительная лексика: {shown_terms}"))
     matched = next((phrase for phrase in NEGATIVE_PHRASES if phrase in low), None)
     if matched and not positive_context(text, matched):
         findings.append(Finding("Негатив / жалоба", f"Негативная формулировка: «{matched}»"))
-
     words = WORD_RE.findall(low)
     if len(words) >= 5:
         unique_ratio = len(set(words)) / len(words)
         long_tokens = [w for w in words if len(w) >= 8]
         if unique_ratio > 0.9 and len(long_tokens) >= 3 and not any(ch in text for ch in ".,!?:;\n"):
             findings.append(Finding("Бессвязный текст", "Похоже на случайный набор слов; проверьте вручную"))
-
     return findings
 
 
@@ -184,29 +157,20 @@ def analyze(files: list[pd.DataFrame]) -> pd.DataFrame:
     missing = [column for column in REQUIRED_COLUMNS if column not in data.columns]
     if missing:
         raise ValueError("Не найдены обязательные колонки: " + ", ".join(missing))
-
-    users: list[str] = []
-    objects: list[str] = []
+    users, objects = [], []
     for value in data["Кем создан"]:
         author = parse_json_cell(value)
-        # Email is a practical fallback for older exports without author.id.
         users.append(extract_id(author.get("id")) or str(author.get("email") or "").strip().casefold())
     for value in data["Объект"]:
         objects.append(extract_id(parse_json_cell(value).get("id")))
     data["ID пользователя"] = users
     data["ID объекта"] = objects
-
     data["Причина"] = ""
     data["Категория"] = ""
     data["Рекомендация"] = "Опубликовать"
-
-    # Duplicate policy: same user ID + same object ID always blocks every later review,
-    # regardless of comment text. When timestamps tie, original row order decides.
     valid_pair = data["ID пользователя"].ne("") & data["ID объекта"].ne("")
     data["__created_sort"] = pd.to_datetime(data["Создан"], errors="coerce", dayfirst=False)
-    sorted_idx = data.loc[valid_pair].sort_values(
-        ["__created_sort", "__source_file", "__source_order"], na_position="last", kind="stable"
-    ).index
+    sorted_idx = data.loc[valid_pair].sort_values(["__created_sort", "__source_file", "__source_order"], na_position="last", kind="stable").index
     seen: set[tuple[str, str]] = set()
     duplicate_indices: set[int] = set()
     for idx in sorted_idx:
@@ -215,7 +179,6 @@ def analyze(files: list[pd.DataFrame]) -> pd.DataFrame:
             duplicate_indices.add(idx)
         else:
             seen.add(pair)
-
     for idx, row in data.iterrows():
         findings = check_comment(row["Комментарий"])
         if idx in duplicate_indices:
@@ -227,27 +190,19 @@ def analyze(files: list[pd.DataFrame]) -> pd.DataFrame:
             data.at[idx, "Причина"] = (data.at[idx, "Причина"] + "; " if data.at[idx, "Причина"] else "") + "Не удалось определить ID объекта"
             data.at[idx, "Категория"] = (data.at[idx, "Категория"] + "; " if data.at[idx, "Категория"] else "") + "Нужна проверка данных"
         if findings:
-            categories = [f.category for f in findings]
-            reasons = [f.reason for f in findings]
-            data.at[idx, "Категория"] = "; ".join(filter(None, [data.at[idx, "Категория"], *categories]))
-            data.at[idx, "Причина"] = "; ".join(filter(None, [data.at[idx, "Причина"], *reasons]))
+            data.at[idx, "Категория"] = "; ".join(filter(None, [data.at[idx, "Категория"], *[f.category for f in findings]]))
+            data.at[idx, "Причина"] = "; ".join(filter(None, [data.at[idx, "Причина"], *[f.reason for f in findings]]))
             data.at[idx, "Рекомендация"] = "Блокировать"
-
     return data.drop(columns=["__created_sort"])
 
 
 def to_excel(data: pd.DataFrame) -> bytes:
     output = io.BytesIO()
-    visible = data.drop(columns=[c for c in data.columns if c.startswith("__")], errors="ignore")
-    table_columns = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина"]
-    category_sheets = [
-        ("Повторный отзыв", "Повторный отзыв"),
-        ("Бессвязный текст", "Бессвязный текст"),
-        ("Негатив жалоба", "Негатив / жалоба"),
-    ]
-    # Use a fresh XLSX writer for the report. This avoids inheriting workbook
-    # visibility state from uploaded workbooks and keeps the export independent
-    # from the engine used to read the source files.
+    export = data.copy()
+    export["Файл"] = export["__source_file"]
+    visible = export.drop(columns=[c for c in export.columns if c.startswith("__")], errors="ignore")
+    table_columns = ["ID", "Файл", "Комментарий", "Оценка", "ID пользователя", "ID объекта", "Категория", "Причина"]
+    category_sheets = [("Повторный отзыв", "Повторный отзыв"), ("Бессвязный текст", "Бессвязный текст"), ("Негатив жалоба", "Негатив / жалоба")]
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         blocked = visible[visible["Рекомендация"] == "Блокировать"]
         category_values = visible["Категория"].fillna("").str.split("; ")
@@ -261,32 +216,18 @@ def to_excel(data: pd.DataFrame) -> bytes:
 
 st.title("Модератор комментариев")
 st.caption("Загрузите Excel-файлы. Проверка выполняется скриптом; ИИ и общее хранилище не используются.")
-
 with st.expander("Правила проверки", expanded=False):
-    st.markdown(
-        "- Один и тот же **ID пользователя + ID объекта**: самый ранний отзыв остаётся, каждый следующий рекомендуется заблокировать. Текст не сравнивается.\n"
-        "- Проверяются ссылки, пустые заполнители и набор явных негативных формулировок.\n"
-        "- Отсутствующие ID автора или объекта отмечаются для ручной проверки.\n"
-        "- Проверка бессвязного текста эвристическая и может ошибаться."
-    )
-
+    st.markdown("- Один и тот же **ID пользователя + ID объекта**: самый ранний отзыв остаётся, каждый следующий рекомендуется заблокировать. Текст не сравнивается.\n- Проверяются ссылки, пустые заполнители и набор явных негативных формулировок.\n- Отсутствующие ID автора или объекта отмечаются для ручной проверки.\n- Проверка бессвязного текста эвристическая и может ошибаться.")
 with st.sidebar:
     st.header("Настройки")
-    st.info(
-        "Используется встроенный словарь модерации: ненормативная лексика, "
-        "оскорбления, уничижительные обозначения групп и явные угрозы."
-    )
-    st.caption(
-        "Срабатывания этого словаря попадают в категорию «Негатив / жалоба». "
-        "Список зашит в код и не редактируется пользователем."
-    )
+    st.info("Используется встроенный словарь модерации: ненормативная лексика, оскорбления, уничижительные обозначения групп и явные угрозы.")
+    st.caption("Срабатывания этого словаря попадают в категорию «Негатив / жалоба». Список зашит в код и не редактируется пользователем.")
 
 uploads = st.file_uploader("Excel-файлы с комментариями", type=["xlsx"], accept_multiple_files=True)
 if uploads:
     st.info(f"Загружено файлов: {len(uploads)}. Файлы обрабатываются только в текущем сеансе.")
     try:
-        frames = []
-        file_rows = []
+        frames, file_rows = [], []
         for file in uploads:
             frame = load_upload(file)
             frames.append(frame)
@@ -298,62 +239,26 @@ if uploads:
         m1, m2, m3 = st.columns(3)
         m1.metric("Комментариев", len(result))
         m2.metric("К блокировке", blocked_count)
-        m3.metric("Нужна проверка данных", int((result["Категория"].str.contains("Нужна проверка данных", na=False)).sum()))
-
-        category_tables = [
-            ("Повторный отзыв", "Повторный отзыв"),
-            ("Бессвязный текст", "Бессвязный текст"),
-            ("Негатив / жалоба", "Негатив / жалоба"),
-        ]
-        table_columns = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "__source_file"]
+        m3.metric("Нужна проверка данных", int(result["Категория"].str.contains("Нужна проверка данных", na=False).sum()))
+        category_tables = [("Повторный отзыв", "Повторный отзыв"), ("Бессвязный текст", "Бессвязный текст"), ("Негатив / жалоба", "Негатив / жалоба")]
+        table_columns = ["ID", "__source_file", "Комментарий", "Оценка", "ID пользователя", "ID объекта", "Категория", "Причина"]
         category_values = result["Категория"].fillna("").str.split("; ")
         for title, category in category_tables:
             st.subheader(title)
             category_mask = category_values.apply(lambda values: category in values)
-            category_rows = result.loc[(result["Рекомендация"] == "Блокировать") & category_mask, table_columns]
-            category_rows = category_rows.rename(columns={"__source_file": "Файл"})
+            category_rows = result.loc[(result["Рекомендация"] == "Блокировать") & category_mask, table_columns].rename(columns={"__source_file": "Файл"})
             if category_rows.empty:
                 st.info(f"В категории «{title}» блокировок нет.")
             else:
-                st.dataframe(
-                    category_rows,
-                    width="stretch",
-                    hide_index=True,
-                    alt=f"Комментарии категории «{title}», рекомендованные к блокировке",
-                    column_config={
-                        "Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"),
-                        "Комментарий": st.column_config.TextColumn(width="large"),
-                        "Причина": st.column_config.TextColumn(width="large"),
-                    },
-                )
-
+                st.dataframe(category_rows, width="stretch", hide_index=True, column_config={"Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"), "Комментарий": st.column_config.TextColumn(width="large"), "Причина": st.column_config.TextColumn(width="large")})
         st.subheader("Полные данные по всем комментариям")
-        show_cols = ["ID", "Оценка", "Комментарий", "ID пользователя", "ID объекта", "Категория", "Причина", "Рекомендация", "__source_file"]
+        show_cols = ["ID", "__source_file", "Комментарий", "Оценка", "ID пользователя", "ID объекта", "Категория", "Причина", "Рекомендация"]
         editable = result[show_cols].rename(columns={"__source_file": "Файл"})
-        edited = st.data_editor(
-            editable,
-            width="stretch",
-            hide_index=True,
-            alt="Все проверенные комментарии с оценкой, причиной и рекомендацией",
-            disabled=[c for c in editable.columns if c != "Рекомендация"],
-            column_config={
-                "Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"),
-                "Комментарий": st.column_config.TextColumn(width="large"),
-                "Причина": st.column_config.TextColumn(width="large"),
-                "Рекомендация": st.column_config.SelectboxColumn(options=["Блокировать", "Опубликовать", "Проверить вручную"], required=True),
-            },
-        )
+        edited = st.data_editor(editable, width="stretch", hide_index=True, disabled=[c for c in editable.columns if c != "Рекомендация"], column_config={"Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"), "Комментарий": st.column_config.TextColumn(width="large"), "Причина": st.column_config.TextColumn(width="large"), "Рекомендация": st.column_config.SelectboxColumn(options=["Блокировать", "Опубликовать", "Проверить вручную"], required=True)})
         result["Рекомендация"] = edited["Рекомендация"].values
-
         blocked_ids = result.loc[result["Рекомендация"] == "Блокировать", "ID"].astype(str).tolist()
         st.markdown("**Итоговый список ID к блокировке:** " + (", ".join(blocked_ids) if blocked_ids else "нет"))
-        st.download_button(
-            "Скачать Excel с результатами",
-            data=to_excel(result),
-            file_name="moderation_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-        )
+        st.download_button("Скачать Excel с результатами", data=to_excel(result), file_name="moderation_results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
     except Exception as exc:
         st.error(f"Не удалось обработать файл: {exc}")
 else:
