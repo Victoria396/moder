@@ -108,6 +108,7 @@ def check_comment(comment: Any, forbidden_terms: list[str]) -> list[Finding]:
 
 
 def load_upload(uploaded_file) -> pd.DataFrame:
+    uploaded_file.seek(0)
     data = pd.read_excel(uploaded_file, engine="openpyxl")
     data["__source_file"] = uploaded_file.name
     data["__source_order"] = range(len(data))
@@ -174,7 +175,10 @@ def analyze(files: list[pd.DataFrame], forbidden_terms: list[str]) -> pd.DataFra
 def to_excel(data: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     visible = data.drop(columns=[c for c in data.columns if c.startswith("__")], errors="ignore")
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    # Use a fresh XLSX writer for the report. This avoids inheriting workbook
+    # visibility state from uploaded workbooks and keeps the export independent
+    # from the engine used to read the source files.
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         visible.to_excel(writer, index=False, sheet_name="Результаты")
         blocked = visible[visible["Рекомендация"] == "Блокировать"]
         blocked[["ID", "ID пользователя", "ID объекта", "Категория", "Причина"]].to_excel(
@@ -207,8 +211,14 @@ uploads = st.file_uploader("Excel-файлы с комментариями", typ
 if uploads:
     st.info(f"Загружено файлов: {len(uploads)}. Файлы обрабатываются только в текущем сеансе.")
     try:
-        frames = [load_upload(file) for file in uploads]
+        frames = []
+        file_rows = []
+        for file in uploads:
+            frame = load_upload(file)
+            frames.append(frame)
+            file_rows.append({"Файл": file.name, "Строк": len(frame)})
         result = analyze(frames, [term for term in forbidden_raw.splitlines() if term.strip()])
+        st.caption("Загружено в проверку: " + "; ".join(f"{item['Файл']} — {item['Строк']} строк" for item in file_rows))
         blocked_count = int((result["Рекомендация"] == "Блокировать").sum())
         st.subheader("Результаты")
         m1, m2, m3 = st.columns(3)
