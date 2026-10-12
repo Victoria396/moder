@@ -157,28 +157,41 @@ def analyze(files: list[pd.DataFrame]) -> pd.DataFrame:
     missing = [column for column in REQUIRED_COLUMNS if column not in data.columns]
     if missing:
         raise ValueError("Не найдены обязательные колонки: " + ", ".join(missing))
-    users, objects = [], []
+    users, objects, object_types = [], [], []
     for value in data["Кем создан"]:
         author = parse_json_cell(value)
         users.append(extract_id(author.get("id")) or str(author.get("email") or "").strip().casefold())
     for value in data["Объект"]:
-        objects.append(extract_id(parse_json_cell(value).get("id")))
+        obj = parse_json_cell(value)
+        objects.append(extract_id(obj.get("id")))
+        object_types.append(extract_id(obj.get("entity_code")).casefold())
     data["ID пользователя"] = users
     data["ID объекта"] = objects
+    data["Тип объекта"] = object_types
     data["Причина"] = ""
     data["Категория"] = ""
     data["Рекомендация"] = "Опубликовать"
-    valid_pair = data["ID пользователя"].ne("") & data["ID объекта"].ne("")
+    # An object is identified by both its type and ID. Numeric IDs may overlap
+    # across entity types (for example, a quiz and a museum can both have ID 108).
+    valid_pair = (
+        data["ID пользователя"].ne("")
+        & data["Тип объекта"].ne("")
+        & data["ID объекта"].ne("")
+    )
     data["__created_sort"] = pd.to_datetime(data["Создан"], errors="coerce", dayfirst=False)
     sorted_idx = data.loc[valid_pair].sort_values(["__created_sort", "__source_file", "__source_order"], na_position="last", kind="stable").index
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     duplicate_indices: set[int] = set()
     for idx in sorted_idx:
-        pair = (data.at[idx, "ID пользователя"], data.at[idx, "ID объекта"])
-        if pair in seen:
+        key = (
+            data.at[idx, "ID пользователя"],
+            data.at[idx, "Тип объекта"],
+            data.at[idx, "ID объекта"],
+        )
+        if key in seen:
             duplicate_indices.add(idx)
         else:
-            seen.add(pair)
+            seen.add(key)
     for idx, row in data.iterrows():
         findings = check_comment(row["Комментарий"])
         if idx in duplicate_indices:
@@ -189,6 +202,11 @@ def analyze(files: list[pd.DataFrame]) -> pd.DataFrame:
         if not extract_id(row["ID объекта"]):
             data.at[idx, "Причина"] = (data.at[idx, "Причина"] + "; " if data.at[idx, "Причина"] else "") + "Не удалось определить ID объекта"
             data.at[idx, "Категория"] = (data.at[idx, "Категория"] + "; " if data.at[idx, "Категория"] else "") + "Нужна проверка данных"
+        if not extract_id(row["Тип объекта"]):
+            data.at[idx, "Причина"] = (data.at[idx, "Причина"] + "; " if data.at[idx, "Причина"] else "") + "Не удалось определить тип объекта; проверка повторов по объекту не выполнена"
+            data.at[idx, "Категория"] = (data.at[idx, "Категория"] + "; " if data.at[idx, "Категория"] else "") + "Нужна проверка данных"
+        if not extract_id(row["ID пользователя"]) or not extract_id(row["ID объекта"]) or not extract_id(row["Тип объекта"]):
+            data.at[idx, "Рекомендация"] = "Проверить вручную"
         if findings:
             data.at[idx, "Категория"] = "; ".join(filter(None, [data.at[idx, "Категория"], *[f.category for f in findings]]))
             data.at[idx, "Причина"] = "; ".join(filter(None, [data.at[idx, "Причина"], *[f.reason for f in findings]]))
@@ -201,7 +219,7 @@ def to_excel(data: pd.DataFrame) -> bytes:
     export = data.copy()
     export["Файл"] = export["__source_file"]
     visible = export.drop(columns=[c for c in export.columns if c.startswith("__")], errors="ignore")
-    table_columns = ["ID", "Файл", "Комментарий", "Оценка", "ID пользователя", "ID объекта", "Категория", "Причина"]
+    table_columns = ["ID", "Файл", "Комментарий", "Оценка", "ID пользователя", "Тип объекта", "ID объекта", "Категория", "Причина"]
     category_sheets = [("Повторный отзыв", "Повторный отзыв"), ("Бессвязный текст", "Бессвязный текст"), ("Негатив жалоба", "Негатив / жалоба")]
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         blocked = visible[visible["Рекомендация"] == "Блокировать"]
@@ -217,7 +235,7 @@ def to_excel(data: pd.DataFrame) -> bytes:
 st.title("Модератор комментариев")
 st.caption("Загрузите Excel-файлы. Проверка выполняется скриптом; ИИ и общее хранилище не используются.")
 with st.expander("Правила проверки", expanded=False):
-    st.markdown("- Один и тот же **ID пользователя + ID объекта**: самый ранний отзыв остаётся, каждый следующий рекомендуется заблокировать. Текст не сравнивается.\n- Проверяются ссылки, пустые заполнители и набор явных негативных формулировок.\n- Отсутствующие ID автора или объекта отмечаются для ручной проверки.\n- Проверка бессвязного текста эвристическая и может ошибаться.")
+    st.markdown("- Один и тот же **ID пользователя + тип объекта + ID объекта**: самый ранний отзыв остаётся, каждый следующий рекомендуется заблокировать. Числовые ID могут совпадать у объектов разных типов. Текст не сравнивается.\n- Проверяются ссылки, пустые заполнители и набор явных негативных формулировок.\n- Отсутствующие ID автора или объекта отмечаются для ручной проверки.\n- Проверка бессвязного текста эвристическая и может ошибаться.")
 with st.sidebar:
     st.header("Настройки")
     st.info("Используется встроенный словарь модерации: ненормативная лексика, оскорбления, уничижительные обозначения групп и явные угрозы.")
@@ -241,7 +259,7 @@ if uploads:
         m2.metric("К блокировке", blocked_count)
         m3.metric("Нужна проверка данных", int(result["Категория"].str.contains("Нужна проверка данных", na=False).sum()))
         category_tables = [("Повторный отзыв", "Повторный отзыв"), ("Бессвязный текст", "Бессвязный текст"), ("Негатив / жалоба", "Негатив / жалоба")]
-        table_columns = ["ID", "__source_file", "Комментарий", "Оценка", "ID пользователя", "ID объекта", "Категория", "Причина"]
+        table_columns = ["ID", "__source_file", "Комментарий", "Оценка", "ID пользователя", "Тип объекта", "ID объекта", "Категория", "Причина"]
         category_values = result["Категория"].fillna("").str.split("; ")
         for title, category in category_tables:
             st.subheader(title)
@@ -252,7 +270,7 @@ if uploads:
             else:
                 st.dataframe(category_rows, width="stretch", hide_index=True, column_config={"Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"), "Комментарий": st.column_config.TextColumn(width="large"), "Причина": st.column_config.TextColumn(width="large")})
         st.subheader("Полные данные по всем комментариям")
-        show_cols = ["ID", "__source_file", "Комментарий", "Оценка", "ID пользователя", "ID объекта", "Категория", "Причина", "Рекомендация"]
+        show_cols = ["ID", "__source_file", "Комментарий", "Оценка", "ID пользователя", "Тип объекта", "ID объекта", "Категория", "Причина", "Рекомендация"]
         editable = result[show_cols].rename(columns={"__source_file": "Файл"})
         edited = st.data_editor(editable, width="stretch", hide_index=True, disabled=[c for c in editable.columns if c != "Рекомендация"], column_config={"Оценка": st.column_config.NumberColumn("Оценка", min_value=1, max_value=5, step=1, format="%d"), "Комментарий": st.column_config.TextColumn(width="large"), "Причина": st.column_config.TextColumn(width="large"), "Рекомендация": st.column_config.SelectboxColumn(options=["Блокировать", "Опубликовать", "Проверить вручную"], required=True)})
         result["Рекомендация"] = edited["Рекомендация"].values
